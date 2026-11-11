@@ -63,7 +63,7 @@ def main():
         "max_tokens": 512,
     }
 
-    # 与之前调用自己的 FastAPI 接口一样，这里也是发 HTTP 请求。
+    # 第一次请求模型：确定工具和参数
     try:
         response = requests.post(
             "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -112,6 +112,7 @@ def main():
             return
 
         print("准备查询工单：", ticket_id)
+        # 执行本地函数：获取真实工单数据
         ticket = get_ticket(ticket_id)
         print("实际查询结果：", ticket)
         payload["messages"].append({
@@ -121,7 +122,7 @@ def main():
         })
     print("Token 用量：", result.get("usage", {}))
 
-    # 这一轮让模型根据已有查询结果生成回答。
+    # 第二次请求模型：根据查询结果生成回答
     payload["tool_choice"] = "none"
 
     final_response = requests.post(
