@@ -64,6 +64,16 @@ def create_ticket(title: str, description: str):
         return {
             "error": "工单服务返回错误，请检查提交内容和服务状态"
         }
+def preview_tool(tool_name, arguments):
+    if tool_name == "get_ticket":
+        print("准备查询工单：", arguments["ticket_id"])
+
+    elif tool_name == "create_ticket":
+        print("标题是：", arguments["title"])
+        print("描述是", arguments["description"])
+
+    else:
+        print("不支持这个工具")
 
 if __name__ == "__main__":
     created_ticket = create_ticket(
