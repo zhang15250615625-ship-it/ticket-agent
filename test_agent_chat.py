@@ -101,6 +101,53 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(query.call_args_list, [call(1), call(2)])
         self.assertIn("2号待处理", output)
 
+    def test_five_complete_turns(self):
+        questions = ["你好", "查4号和5号", "第三问", "第四问", "第五问", "第六问", "查7号", "第八问"]
+        responses = [
+            text_response("你好"), tool_response(4, 5), text_response("已查询4号和5号"),
+            text_response("第三答"), text_response("第四答"), text_response("第五答"),
+            text_response("第六答"), tool_response(7), requests.Timeout(), text_response("第八答"),
+        ]
+        payloads, _, _ = self.run_chat(questions + ["退出"], responses)
+        first_requests = [p["messages"] for p in payloads if p["tool_choice"] == "auto"]
+        final_requests = [p["messages"] for p in payloads if p["tool_choice"] == "none"]
+        system = first_requests[0][0]
+        self.assertEqual(system["role"], "system")
+
+        # 第6、7、8次提问分别带第1–5、2–6、3–7轮，加上当前问题。
+        for index in (5, 6, 7):
+            messages = first_requests[index]
+            self.assertEqual(messages[0], system)
+            self.assertEqual(messages.count(system), 1)
+            users = [m["content"] for m in messages if m["role"] == "user"]
+            self.assertEqual(users, questions[index - 5:index + 1])
+
+        # 第2轮有两个工具结果。第7次提问时，它们仍与请求、最终回答相邻。
+        second_turn = final_requests[0][-4:] + [{"role": "assistant", "content": "已查询4号和5号"}]
+        self.assertEqual([m["role"] for m in second_turn], ["user", "assistant", "tool", "tool", "assistant"])
+        self.assertEqual(first_requests[6][1:6], second_turn)
+        self.assertEqual(final_requests[1][:-2], first_requests[6])
+
+        # 到第8次提问，第2轮已经整轮移除。第7轮即使文字回复超时，仍有完整执行记录。
+        eighth = first_requests[7]
+        expected_roles = ["system"] + ["user", "assistant"] * 4 + ["user", "assistant", "tool", "assistant", "user"]
+        self.assertEqual([m["role"] for m in eighth], expected_roles)
+        self.assertEqual(eighth[-5:-2], final_requests[1][-3:])
+        self.assertIn("本轮工具结果已保存", eighth[-2]["content"])
+
+    def test_unsaved_turns_do_not_evict_completed_turns(self):
+        questions = [f"第{i}问" for i in range(1, 6)]
+        replies = [text_response(f"第{i}答") for i in range(1, 6)]
+        payloads, _, query = self.run_chat(
+            questions + ["请求超时", "查4张工单", "接着聊", "退出"],
+            replies + [requests.Timeout(), tool_response(1, 2, 3, 4), text_response("好的")],
+        )
+        saved = payloads[5]["messages"][:-1]
+        self.assertEqual([m["content"] for m in saved if m["role"] == "user"], questions)
+        self.assertEqual(payloads[6]["messages"][:-1], saved)
+        self.assertEqual(payloads[7]["messages"][:-1], saved)
+        query.assert_not_called()
+
     def test_failed_second_request_keeps_tool_results(self):
         bad_json = requests.Response()
         bad_json.status_code = 200

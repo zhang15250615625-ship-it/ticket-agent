@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from ticket_tools import create_ticket, get_ticket
 
 MAX_TOOL_CALLS = 3
+MAX_HISTORY_TURNS = 5
 TOOLS = [
     {
         "type": "function",
@@ -131,6 +132,13 @@ def request_model(payload, headers):
     return answer
 
 
+def save_turn(completed_turns, turn_messages):
+    """一轮从用户提问开始，到助手给出最终回复结束。"""
+    completed_turns.append(turn_messages)
+    if len(completed_turns) > MAX_HISTORY_TURNS:
+        completed_turns.pop(0)
+
+
 def main():
     load_dotenv(Path(__file__).resolve().parent / ".env")
     api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
@@ -140,20 +148,18 @@ def main():
 
     headers = {"Authorization": f"Bearer {api_key}"}
 
-    # 重点一：历史列表放在循环外，只在启动时创建一次。
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是工单助手。根据本次对话理解用户补充的工单编号。"
-                "查询工单信息时使用工具；缺少编号时先询问用户，不要猜测。"
-                "用户明确要求创建工单且标题和描述齐全时使用 create_ticket；缺少内容先追问，不要虚构。"
-                "创建工具由程序在终端请求用户确认，你不能代替用户确认。"
-                "工具返回 cancelled=true 时说明用户取消，不能说创建成功。"
-                "根据工具的真实结果回答；工具返回错误时如实说明。"
-            ),
-        }
-    ]
+    system_message = {
+        "role": "system",
+        "content": (
+            "你是工单助手。根据本次对话理解用户补充的工单编号。"
+            "查询工单信息时使用工具；缺少编号时先询问用户，不要猜测。"
+            "用户明确要求创建工单且标题和描述齐全时使用 create_ticket；缺少内容先追问，不要虚构。"
+            "创建工具由程序在终端请求用户确认，你不能代替用户确认。"
+            "工具返回 cancelled=true 时说明用户取消，不能说创建成功。"
+            "根据工具的真实结果回答；工具返回错误时如实说明。"
+        ),
+    }
+    completed_turns = []  # 每个元素是一次完整问答的消息列表。
 
     print("工单助手已启动，输入“退出”结束本次对话。")
     while True:
@@ -165,13 +171,15 @@ def main():
             print("请输入内容")
             continue
 
-        # 先在副本中处理这一轮；工具结果齐全后会保存，文字回复失败也保留执行记录。
-        turn_messages = messages.copy()
-        turn_messages.append({"role": "user", "content": user_question})
+        # 发送给模型时，将各轮的消息按顺序放在系统提示之后。
+        previous_messages = [system_message]
+        for turn in completed_turns:
+            previous_messages.extend(turn)
+        turn_messages = [{"role": "user", "content": user_question}]
 
         payload = {
             "model": os.getenv("LLM_MODEL", "qwen3.7-flash"),
-            "messages": turn_messages,
+            "messages": previous_messages + turn_messages,
             "tools": TOOLS,
             # 重点二：每轮重新允许模型选择工具。
             "tool_choice": "auto",
@@ -192,7 +200,7 @@ def main():
             print("本轮未执行工具，请分批提问。")
             continue
         if not tool_calls:
-            messages = turn_messages
+            save_turn(completed_turns, turn_messages)
             print("助手：", answer["content"])
             continue
 
@@ -221,6 +229,7 @@ def main():
             })
 
         # 本轮工具结果已经齐全，让模型直接组织回答。
+        payload["messages"] = previous_messages + turn_messages
         payload["tool_choice"] = "none"
         final_answer = request_model(payload, headers)
         if final_answer is None or final_answer.get("tool_calls"):
@@ -235,7 +244,7 @@ def main():
 
         # 最终回答也加入历史，下一轮请求会携带这些消息。
         turn_messages.append(final_answer)
-        messages = turn_messages
+        save_turn(completed_turns, turn_messages)
         print("助手：", final_answer["content"])
 
 
