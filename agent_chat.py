@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from ticket_tools import create_ticket, get_ticket
 
-
+MAX_TOOL_CALLS = 3
 TOOLS = [
     {
         "type": "function",
@@ -187,6 +187,10 @@ def main():
         # 重点三：助手的追问也要保存，下一轮才能接着回答。
         turn_messages.append(answer)
         tool_calls = answer.get("tool_calls") or []
+        if len(tool_calls) > MAX_TOOL_CALLS:
+            print(f"本轮最多允许 {MAX_TOOL_CALLS} 次工具调用。")
+            print("本轮未执行工具，请分批提问。")
+            continue
         if not tool_calls:
             messages = turn_messages
             print("助手：", answer["content"])

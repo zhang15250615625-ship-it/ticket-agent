@@ -156,6 +156,61 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual([m["tool_call_id"] for m in results], ["call_0", "call_1"])
         self.assertEqual(query.call_args_list, [call(1), call(2)])
 
+    def test_exactly_three_tool_calls_are_allowed(self):
+        payloads, output, query = self.run_chat(
+            ["查1号、2号和3号", "退出"],
+            [tool_response(1, 2, 3), text_response("三张工单均待处理")],
+        )
+        self.assertEqual(query.call_args_list, [call(1), call(2), call(3)])
+        self.create_mock.assert_not_called()
+        self.assertEqual(len(payloads), 2)
+        results = [m for m in payloads[1]["messages"] if m["role"] == "tool"]
+        self.assertEqual([m["tool_call_id"] for m in results], ["call_0", "call_1", "call_2"])
+        self.assertIn("三张工单均待处理", output)
+
+    def test_four_tool_calls_are_rejected_before_any_execution(self):
+        payloads, output, query = self.run_chat(
+            ["查1号、2号、3号和4号", "退出"], [tool_response(1, 2, 3, 4)]
+        )
+        query.assert_not_called()
+        self.create_mock.assert_not_called()
+        # 超限时只进行第一步模型请求，不执行工具，也不请求最终回答。
+        self.assertEqual(len(payloads), 1)
+        self.assertIn("本轮最多允许 3 次工具调用", output)
+        self.assertIn("本轮未执行工具", output)
+
+    def test_over_limit_batch_does_not_prompt_for_or_create_ticket(self):
+        message = create_response().json()["choices"][0]["message"]
+        queries = tool_response(1, 2, 3).json()["choices"][0]["message"]["tool_calls"]
+        message["tool_calls"].extend(queries)
+        payloads, output, query = self.run_chat(
+            ["新建一张工单并查询1号、2号、3号", "退出"], [model_response(message)]
+        )
+        query.assert_not_called()
+        self.create_mock.assert_not_called()
+        self.assertEqual(len(payloads), 1)
+        self.assertNotIn("即将创建工单", output)
+        self.assertIn("本轮未执行工具", output)
+
+    def test_rejected_turn_keeps_prior_history_and_allows_next_query(self):
+        payloads, output, query = self.run_chat(
+            ["你好", "查1号、2号、3号和4号", "只查1号", "退出"],
+            [text_response("你好，我是工单助手"), tool_response(1, 2, 3, 4),
+             tool_response(1), text_response("1号待处理")],
+        )
+        query.assert_called_once_with(1)
+        self.create_mock.assert_not_called()
+        self.assertEqual(len(payloads), 4)
+        # 下一轮仅带此前完成的对话和新输入，没有超限的工具调用记录。
+        history = payloads[2]["messages"]
+        self.assertEqual([m["role"] for m in history],
+                         ["system", "user", "assistant", "user"])
+        self.assertEqual(history[1]["content"], "你好")
+        self.assertEqual(history[2]["content"], "你好，我是工单助手")
+        self.assertEqual(history[3]["content"], "只查1号")
+        self.assertEqual(payloads[2]["tool_choice"], "auto")
+        self.assertIn("1号待处理", output)
+
     def test_invalid_ticket_id_is_not_executed(self):
         payloads, _, query = self.run_chat(
             ["查询0号", "退出"], [tool_response(0), text_response("编号必须是正整数")]
